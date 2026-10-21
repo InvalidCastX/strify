@@ -117,11 +117,28 @@ test("Home: chips filter client-side, Show all expands a carousel and Back retur
 
 test("Search: recommendations with genre chips (no junk); a query still finds incomplete tracks, complete ones first", async () => {
   const search = await openTab("search");
-  assert.ok(search.includes("strify-chips") && search.includes("data-strify-genre"));
+  assert.ok(search.includes("Browse all") && search.includes("ss-tile") && search.includes("data-strify-genre"));
   assert.ok(!search.includes("voice memo 1"));
   click({ "[data-strify-genre]": { dataset: { strifyGenre: "Pop" } } });
   await new Promise((r) => setTimeout(r, 40));
   assert.match(body.innerHTML, /results for “Pop”/);
+  assert.ok(body.innerHTML.includes("ss-chips") && body.innerHTML.includes('data-strify-sfilter="artists"'), "result filters (All / Songs / Artists)");
+});
+
+test("Search: typing a query shows a top result, songs and artists; the Artists filter lists only artists", async () => {
+  await openTab("search");
+  const input = { value: "song" };
+  for (const fn of listeners.input || []) fn({ target: { closest: (sel) => (sel === "[data-strify-search]" ? input : null) } });
+  await new Promise((r) => setTimeout(r, 200));
+  const html = body.innerHTML;
+  assert.ok(html.includes("Top result") && html.includes('aria-label="Songs"') && html.includes('aria-label="Artists"'), "top result, songs and artists sections");
+  assert.ok(html.includes("ss-song"), "compact song rows");
+  click({ "[data-strify-sfilter]": { dataset: { strifySfilter: "artists" } } });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(body.innerHTML.includes("ss-artist-grid") && !body.innerHTML.includes("ss-song"), "artists-only view");
+  click({ "[data-strify-search-clear]": {} });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(body.innerHTML.includes("Browse all"), "clearing the search returns to browse tiles");
 });
 
 test("My Library: uploads explain why a draft is hidden and can be removed; liked songs resolve from relay reactions", async () => {

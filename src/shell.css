@@ -12,7 +12,8 @@ button { color: inherit; }
 a { color: inherit; }
 
 .sx-shell { max-width: 1080px; margin: 0 auto; padding: max(12px, env(safe-area-inset-top)) 12px 24px; }
-.sx-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-bottom: 10px; min-height: 40px; }
+/* Relays + Log in sit on the logo row (see .strify-topbar in strify.css). */
+@media (max-width: 520px) { .sx-btn-label, .sx-account-name { display: none; } .sx-btn[data-sx-relays] { padding: 0 10px; } .sx-account .sx-btn { padding: 0 9px; } }
 .sx-foot { margin-top: 18px; text-align: center; color: var(--sf-muted); font-size: 12px; }
 
 .sx-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 38px; padding: 0 14px; border: 1px solid var(--sf-border); border-radius: 10px; background: var(--sf-surface); color: var(--sf-text); font-weight: 600; font-size: 13px; text-decoration: none; cursor: pointer; }

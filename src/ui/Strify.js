@@ -36,7 +36,7 @@ const S = {
   create: { busy: false, audio: null, cover: null, duration: 0, coverUrl: "", check: null, checkKey: "", uploaded: new Map(), dirtyRender: false },
   global: { status: "idle", tracks: [], skipped: 0, error: "", loadedAt: 0 },
   forYou: { status: "idle", tracks: [], error: "", follows: 0, followSet: new Set(), followState: "none", pubkey: "", loadedAt: 0 },
-  query: "",
+  query: "", searchFilter: "all", // searchFilter: all | songs | artists
   home: freshHome(), homeChip: "all", homeAll: null, homeMore: 0, homeSeed: (Math.random() * 2 ** 31) | 0, homeDrag: false, homeDirty: false,
   viewMode: readViewMode(), // "card" (default) | "list"; a UI preference cached in localStorage only
 };
@@ -392,7 +392,13 @@ const NAV = [["home", "Home", "fa-house"], ["search", "Search", "fa-magnifying-g
 export function renderStrifyPage() {
   return `<section class="strify-page" aria-label="strify music">
     <header class="strify-hero">
-      <div class="strify-brand">${strifyMark("strify-mark")}<div><h1 class="strify-wordmark" aria-label="strify"><span class="strify-wm-a">str</span>ify</h1><p class="strify-tagline"><small>Nostr music</small></p></div></div>
+      <div class="strify-topbar">
+        <div class="strify-brand">${strifyMark("strify-mark")}<div><h1 class="strify-wordmark" aria-label="strify"><span class="strify-wm-a">str</span>ify</h1><p class="strify-tagline"><small>Nostr music</small></p></div></div>
+        <div class="strify-topactions" role="toolbar" aria-label="App">
+          <button type="button" class="sx-btn" data-sx-relays aria-label="Relay settings">${icon("fa-server")}<span class="sx-btn-label">Relays</span> <span class="sx-badge" data-sx-relay-count></span></button>
+          <div data-sx-account></div>
+        </div>
+      </div>
       <nav class="strify-tabs" role="tablist" aria-label="strify sections">
         ${NAV.map(([id, label, ic]) => `<button type="button" role="tab" class="strify-tab" data-strify-tab="${id}" aria-selected="${!parseArtistParam(window.location.search) && S.tab === id}">${icon(ic)}<span>${label}</span></button>`).join("")}
       </nav>
@@ -648,28 +654,101 @@ async function playCollection(key) {
 }
 
 const RECO_ICONS = { "more-artist": "fa-user", "because-genre": "fa-wand-magic-sparkles", follows: "fa-user-group", fresh: "fa-seedling" };
+
+// ── Search (Spotify-style): browse tiles when idle; chips, top result, songs and artists when searching ──
+const SEARCH_FILTERS = [["all", "All"], ["songs", "Songs"], ["artists", "Artists"]];
+const GENRE_TILE_TONES = 8; // CSS cycles --ss-tone-0…7, every one a shade of the strify violet
+
+const searchChipsHtml = () => `<div class="ss-chips" role="group" aria-label="Filter results">${SEARCH_FILTERS.map(([id, label]) => `<button type="button" class="strify-chip" data-strify-sfilter="${id}" aria-pressed="${S.searchFilter === id}">${label}</button>`).join("")}</div>`;
+
+/** Artists behind the matching songs, best name match first. */
+function searchArtists(tracks, q) {
+  const byKey = new Map();
+  for (const t of tracks) { const a = byKey.get(t.pubkey) || { pubkey: t.pubkey, count: 0 }; a.count += 1; byKey.set(t.pubkey, a); }
+  const rank = (name) => { const n = name.toLowerCase(); return n === q ? 0 : n.startsWith(q) ? 1 : n.includes(q) ? 2 : 3; };
+  return [...byKey.values()].map((a) => { const name = artistName(a.pubkey); return { ...a, name, imageUrl: safeHttpsUrl(profiles.get(a.pubkey)?.picture) || "", rank: rank(name) }; })
+    .sort((x, y) => x.rank - y.rank || y.count - x.count || x.name.localeCompare(y.name));
+}
+
+function ssSongRow(track, listName, index) {
+  const k = E(track.key);
+  return `<div class="ss-song${player.currentTrack()?.key === track.key ? " is-current" : ""}" role="listitem" data-strify-card="${k}">
+    <button type="button" class="ss-song-art" data-strify-play-from="${E(listName)}" data-index="${index}" aria-label="Play ${E(track.title)} by ${E(artistOf(track))}">${coverHtml(track.coverArt, "")}<span class="ss-song-play">${icon("fa-play")}</span></button>
+    <div class="ss-song-text"><strong title="${E(track.title)}">${E(track.title)}</strong><button type="button" class="strify-artist-link" data-strify-artist="${E(track.pubkey)}">${E(artistOf(track))}</button></div>
+    ${likeButton(track)}
+    <span class="ss-song-dur">${track.duration ? formatDuration(track.duration) : ""}</span>
+    <button type="button" class="ss-song-more" data-strify-addto="${k}" aria-label="Add to playlist" title="Add to playlist">${icon("fa-circle-plus")}</button>
+  </div>`;
+}
+
+function topResultHtml(top, tracks) {
+  if (top.type === "artist") {
+    const a = top.artist;
+    return `<section class="ss-top" aria-label="Top result"><h2 class="ss-h">Top result</h2>
+      <button type="button" class="ss-topcard" data-strify-artist="${E(a.pubkey)}" aria-label="Open ${E(a.name)}"><span class="ss-top-art is-round">${coverHtml(a.imageUrl, "")}</span><strong title="${E(a.name)}">${E(a.name)}</strong><span class="ss-pill">Artist</span></button></section>`;
+  }
+  const t = top.track;
+  const k = E(t.key);
+  return `<section class="ss-top" aria-label="Top result"><h2 class="ss-h">Top result</h2>
+    <article class="ss-topcard${player.currentTrack()?.key === t.key ? " is-current" : ""}" data-strify-card="${k}">
+      <button type="button" class="ss-top-art" data-strify-play-from="search" data-index="${tracks.indexOf(t)}" aria-label="Play ${E(t.title)} by ${E(artistOf(t))}">${coverHtml(t.coverArt, "")}<span class="ss-top-play">${icon("fa-play")}</span></button>
+      <strong title="${E(t.title)}">${E(t.title)}</strong>
+      <span class="ss-top-sub"><span class="ss-pill">Song</span><button type="button" class="strify-artist-link" data-strify-artist="${E(t.pubkey)}">${E(artistOf(t))}</button></span>
+    </article></section>`;
+}
+
+const artistTiles = (list) => list.map((a) => homeArtistCard({ pubkey: a.pubkey, name: a.name, imageUrl: a.imageUrl })).join("");
+
+function searchResultsHtml(q, loading) {
+  const found = filterTracks(catalog(), S.query, namesFor);
+  const tracks = [...found.filter(isRealMusic), ...found.filter((t) => !isRealMusic(t))]; // complete songs first
+  lists.search = tracks; listLabels.search = "Search results";
+  const word = S.query.trim();
+  const count = `<p class="strify-note" role="status">${tracks.length} result${tracks.length === 1 ? "" : "s"} for “${E(word)}”${loading ? " (still loading…)" : ""}. Search covers the music loaded from your relays.</p>`;
+  if (!tracks.length) return `${count}${loading ? skeleton() : stateBlock("empty", "No matching music", `Nothing matches “${word}”. Check the spelling or try an artist or genre.`, `<button type="button" class="strify-btn" data-strify-search-clear>${icon("fa-xmark")} Clear search</button>`)}`;
+  void loadArtistProfiles(tracks.slice(0, 60)); // artist photos for the results; fetches only what's missing
+  const artists = searchArtists(tracks, q);
+  const chips = searchChipsHtml();
+  const tail = loading ? skeleton() : "";
+  if (S.searchFilter === "songs") return `${chips}${count}${grid("search", tracks, "Search results")}${tail}`;
+  if (S.searchFilter === "artists") return `${chips}${artists.length ? `<div class="ss-artist-grid">${artistTiles(artists.slice(0, 48))}</div>` : stateBlock("empty", "No artists", "No artists match this search.")}${tail}`;
+  // All: a top result beside the best songs, then artists
+  const best = artists[0];
+  const top = best && best.rank <= 1 ? { type: "artist", artist: best } : { type: "track", track: tracks[0] };
+  const songs = tracks.slice(0, 4);
+  const moreSongs = tracks.length > songs.length ? `<button type="button" class="strify-link ss-more" data-strify-sfilter="songs">Show all ${tracks.length} songs</button>` : "";
+  const moreArtists = artists.length > 12 ? `<button type="button" class="strify-link ss-more" data-strify-sfilter="artists">Show all ${artists.length} artists</button>` : "";
+  return `${chips}${count}
+    <div class="ss-split">${topResultHtml(top, tracks)}<section class="ss-songs" aria-label="Songs"><h2 class="ss-h">Songs</h2><div role="list">${songs.map((t) => ssSongRow(t, "search", tracks.indexOf(t))).join("")}</div>${moreSongs}</section></div>
+    ${artists.length ? `<section class="ss-sec" aria-label="Artists"><div class="ss-sec-head"><h2 class="ss-h">Artists</h2>${moreArtists}</div><div class="sh-track" role="list">${artistTiles(artists.slice(0, 12))}</div></section>` : ""}${tail}`;
+}
+
+/** "Browse all": one violet tile per genre, with a tilted cover from that genre like Spotify's category tiles. */
+function browseAllHtml(all) {
+  const real = filterRealMusic(all);
+  const genres = topGenres(real, 24);
+  if (!genres.length) return "";
+  const tiles = genres.map((g, i) => {
+    const cover = real.find((t) => t.coverArt && t.genre && t.genre.trim().toLowerCase() === g.genre.toLowerCase())?.coverArt || "";
+    return `<button type="button" class="ss-tile" style="--ss-tone: var(--ss-tone-${i % GENRE_TILE_TONES})" data-strify-genre="${E(g.genre)}" aria-label="Browse ${E(g.genre)}"><strong>${E(g.genre)}</strong>${cover ? `<span class="ss-tile-art">${coverHtml(cover, "")}</span>` : ""}</button>`;
+  }).join("");
+  return `<section class="ss-sec" aria-label="Browse all"><h2 class="ss-h">Browse all</h2><div class="ss-tiles">${tiles}</div></section>`;
+}
+
 function searchHtml() {
   const all = catalog();
   const q = normalizeQuery(S.query);
   const loading = loadingCatalog();
-  if (q) {
-    const found = filterTracks(all, S.query, namesFor);
-    const ordered = [...found.filter(isRealMusic), ...found.filter((t) => !isRealMusic(t))]; // complete songs first
-    const note = `<p class="strify-note" role="status">${ordered.length} result${ordered.length === 1 ? "" : "s"} for “${E(S.query.trim())}”${loading ? " (still loading…)" : ""}. Search covers the music loaded from your relays.</p>`;
-    if (!ordered.length) return `${note}${loading ? skeleton() : stateBlock("empty", "No matching music", `Nothing matches “${S.query.trim()}”. Check the spelling or try an artist or genre.`, `<button type="button" class="strify-btn" data-strify-search-clear>${icon("fa-xmark")} Clear search</button>`)}`;
-    return `${note}${grid("search", ordered, "Search results")}${loading ? skeleton() : ""}`;
-  }
+  if (q) return searchResultsHtml(q, loading);
   if (!all.length) {
     if (loading) return skeleton();
     if (S.global.status === "error") return stateBlock("error", "Couldn't reach the music relays", S.global.error, retryButton("search"));
     return stateBlock("empty", "No playable tracks found", `Searched your ${userRelays().length} configured relays. Relays can be offline or hold few audio events; you can add more from the Relays button.`, retryButton("search"));
   }
-  const account = myPubkey();
-  const genres = topGenres(filterRealMusic(all), 10);
-  const chips = genres.length ? `<div class="strify-chips" role="group" aria-label="Browse by genre">${genres.map((g) => `<button type="button" class="strify-chip" data-strify-genre="${E(g.genre)}">${E(g.genre)}</button>`).join("")}</div>` : "";
-  const sections = recommend({ catalog: all, recent: recentTracks(), liked: S.likes.tracks, follows: S.forYou.followSet, me: account });
+  const sections = recommend({ catalog: all, recent: recentTracks(), liked: S.likes.tracks, follows: S.forYou.followSet, me: myPubkey() });
   const shelves = sections.map((section) => shelf(`reco-${section.id}`, section.title, RECO_ICONS[section.id] || "fa-compact-disc", section.tracks)).join("");
-  return `<p class="strify-note">Search songs, artists or genres above, or start from what's recommended.</p>${chips}${shelves || stateBlock("empty", "Nothing to recommend yet", "Play or like a few songs and recommendations will show up here.")}${loading ? skeleton() : ""}`;
+  const recs = shelves ? `<section class="ss-sec" aria-label="Recommended"><h2 class="ss-h">Recommended for you</h2>${shelves}</section>` : "";
+  return `${browseAllHtml(all)}${recs || (browseAllHtml(all) ? "" : stateBlock("empty", "Nothing to browse yet", "Play or like a few songs and recommendations will show up here."))}${loading ? skeleton() : ""}`;
 }
 
 // ── My Library ─────────────────────────────────────────────────────
@@ -753,7 +832,7 @@ function paintToolbar() {
   const bar = document.querySelector("[data-strify-feedbar]");
   if (!bar) return;
   const showSearch = !S.artist && S.tab === "search";
-  const showView = !!S.artist || S.tab === "search" || (S.tab === "library" && S.libTab !== "playlists");
+  const showView = !!S.artist || (S.tab === "search" && !!normalizeQuery(S.query) && S.searchFilter === "songs") || (S.tab === "library" && S.libTab !== "playlists");
   bar.hidden = !showSearch && !showView;
   const search = bar.querySelector("[data-strify-search-wrap]");
   if (search) search.hidden = !showSearch;
@@ -1496,7 +1575,8 @@ function onClick(event) {
   if ((el = q("[data-strify-goto-lib]"))) { S.tab = "library"; S.libTab = el.dataset.strifyGotoLib; S.view = null; paintBody(); void startDiscovery(); return; }
   if ((el = q("[data-strify-goto]"))) { S.tab = el.dataset.strifyGoto; S.view = null; paintBody(); void startDiscovery(); return; }
   if ((el = q("[data-strify-lib]"))) { S.libTab = el.dataset.strifyLib; S.view = null; paintBody(); void startDiscovery("library"); return; }
-  if ((el = q("[data-strify-genre]"))) { S.tab = "search"; S.query = el.dataset.strifyGenre; paintBody(); return; }
+  if ((el = q("[data-strify-genre]"))) { S.tab = "search"; S.query = el.dataset.strifyGenre; S.searchFilter = "songs"; paintBody(); window.scrollTo?.({ top: 0 }); return; }
+  if ((el = q("[data-strify-sfilter]"))) { S.searchFilter = SEARCH_FILTERS.some(([id]) => id === el.dataset.strifySfilter) ? el.dataset.strifySfilter : "all"; paintBody(); return; }
   if (q("[data-strify-recent-clear]")) { history.clear(myPubkey()); paintBody(); return; }
   if (q("[data-strify-check-copyright]")) { void onCheckCopyright(); return; }
   if (q("[data-strify-find-more]")) { void loadMine(true, true).then(() => pageActive && paintBody()); paintBody(); return; }
@@ -1507,7 +1587,7 @@ function onClick(event) {
     if (mode !== S.viewMode) { S.viewMode = mode; saveViewMode(mode); paintBody(); } // same data, same queue; audio untouched
     return;
   }
-  if (q("[data-strify-search-clear]")) { S.query = ""; paintBody(); document.querySelector("[data-strify-search]")?.focus(); return; }
+  if (q("[data-strify-search-clear]")) { S.query = ""; S.searchFilter = "all"; paintBody(); document.querySelector("[data-strify-search]")?.focus(); return; }
   if ((el = q("[data-strify-tab]")) && S.artist) { S.tab = el.dataset.strifyTab; S.view = null; navigate("/"); return; }
   if ((el = q("[data-strify-tab]"))) { S.tab = el.dataset.strifyTab; S.view = null; paintBody(); void startDiscovery(); return; }
   if ((el = q("[data-strify-retry]"))) { const tab = el.dataset.strifyRetry; void startDiscovery(["home", "search", "library", "create"].includes(tab) ? tab : S.tab, true); return; }
@@ -1770,6 +1850,7 @@ export function initStrify(hostApi) {
     const search = e.target.closest?.("[data-strify-search]");
     if (search) { // filters the already-loaded catalog locally: no relay query per keystroke, playback is untouched
       S.query = search.value.slice(0, 120);
+      S.searchFilter = "all"; // a new search starts on All, like Spotify
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => { if (pageActive) paintBody(); }, 120);
       return;

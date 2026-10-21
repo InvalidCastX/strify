@@ -17,10 +17,6 @@ const icon = (name) => `<i class="fa-solid ${name}" aria-hidden="true"></i>`;
 
 // ── Layout ─────────────────────────────────────────────────────────
 document.getElementById("root").innerHTML = `<div class="sx-shell">
-  <div class="sx-bar" role="toolbar" aria-label="App">
-    <button type="button" class="sx-btn" data-sx-relays aria-label="Relay settings">${icon("fa-server")} Relays <span class="sx-badge" data-sx-relay-count></span></button>
-    <div data-sx-account></div>
-  </div>
   <main id="mainContent"></main>
   <footer class="sx-foot">strify reads and publishes music over Nostr relays you choose.</footer>
 </div>
@@ -41,6 +37,7 @@ function paintRelayCount() {
 // ── Account chip ───────────────────────────────────────────────────
 function paintAccount() {
   const host = document.querySelector("[data-sx-account]");
+  if (!host) return;
   if (!state.session) { host.innerHTML = `<button type="button" class="sx-btn sx-primary" data-sx-login>${icon("fa-key")} Log in</button>`; return; }
   const pk = state.session.pubkeyHex;
   const name = state.profile?.display_name || state.profile?.name || shorten(npubFromHex(pk), 8, 4);
@@ -232,9 +229,10 @@ initStrify({
 
 function render() {
   document.getElementById("mainContent").innerHTML = renderStrifyPage();
+  paintAccount(); paintRelayCount(); // the Relays and Log in buttons live in the strify header row
   startStrifyPage();
 }
 window.addEventListener("popstate", render);
 
-paintAccount(); paintRelayCount(); render();
+render();
 if (state.session) void loadMyProfile();
