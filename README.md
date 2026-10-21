@@ -13,6 +13,33 @@ npm test
 
 The build is a static site. `vercel.json` (Vercel) and `public/_redirects` (Cloudflare Pages / Netlify) send every path to `index.html`.
 
+## Embedding in another app (friendstr)
+
+strify is also a library. A host app installs it from GitHub and supplies the account plumbing, so users never log in to strify separately:
+
+```bash
+npm install github:InvalidCastX/strify
+```
+
+```js
+import { initStrify, renderStrifyPage, startStrifyPage, stopStrifyPage } from "strify";
+import "strify/strify.css";
+import { renderPlaylistEmbedPlaceholder } from "strify/embed"; // optional: playlist embeds inside notes
+
+initStrify({
+  embedded: true,          // hide strify's own Relays / Log in buttons
+  basePath: "/strify",     // where the host serves strify (artist links, "back")
+  navigate,                // the host router's client-side navigate(path)
+  profilePlayer,           // optional { pauseProfileMusic, setProfileAutoplayBlocker, setProfilePlayHook } for a second player
+  getSession, getProfile, getUserRelays, getFollows, isPremium, isPremiumLoading,
+  sign, publish, uploadFallback, toast, signIn, openZap,
+});
+// then: container.innerHTML = renderStrifyPage(); startStrifyPage();  (call stopStrifyPage() when leaving the route)
+// the host should dispatch window events "strify:session", "strify:relays", "strify:premium" and "strify:profile" when those change.
+```
+
+Pin a release with `github:InvalidCastX/strify#v1.1.0`. The standalone app's `src/main.js` is a reference host.
+
 ## Login (optional)
 
 - **Nostr extension (NIP-07):** Alby, nos2x, etc. Keys never leave the extension.

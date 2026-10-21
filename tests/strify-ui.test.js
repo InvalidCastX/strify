@@ -61,12 +61,13 @@ StrifyNet.prototype.fetch = async (filters) => {
 const published = []; const signed = []; const puts = [];
 let signedIn = true;
 const mod = await import("../src/ui/Strify.js");
-mod.initStrify({
+const hostStub = () => ({
   getSession: () => (signedIn ? { pubkeyHex: ME, type: "nsec" } : null), getUserRelays: () => ["wss://r.test"], getFollows: () => [], isPremium: () => false, isPremiumLoading: () => false,
   toast() {}, signIn() {}, openZap() {}, uploadFallback: async () => "",
   sign: async (template) => { signed.push(template); return { ...template, id: H(777), pubkey: ME, sig: "s" }; },
   publish: async (template) => { published.push(template); return { signed: { ...template, id: H(800 + published.length), pubkey: ME, created_at: 1_800_000_000, sig: "s".repeat(128) }, result: { accepted: ["wss://r.test"] } }; },
 });
+mod.initStrify(hostStub());
 // MusicBrainz and the media server, both faked.
 globalThis.fetch = async (url, init = {}) => {
   const href = String(url);
@@ -199,4 +200,19 @@ test("Create: refuses to publish without the rights confirmation, and never uplo
   listeners.submit.forEach((fn) => fn({ target: { closest: () => form }, preventDefault() {} }));
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(puts.length, before);
+});
+
+test("embedded mode: the host's navigate and basePath are used and strify drops its own Relays / Log in buttons", async () => {
+  const { renderStrifyPage } = await import("../src/ui/Strify.js");
+  const standalone = renderStrifyPage();
+  assert.ok(standalone.includes("data-sx-relays") && standalone.includes("data-sx-account"));
+  const nav = [];
+  const { initStrify } = await import("../src/ui/Strify.js");
+  initStrify({ ...hostStub(), embedded: true, basePath: "/strify", navigate: (path) => nav.push(path), profilePlayer: { pauseProfileMusic() {}, setProfileAutoplayBlocker() {}, setProfilePlayHook() {} } });
+  const embeddedHtml = renderStrifyPage();
+  assert.ok(!embeddedHtml.includes("data-sx-relays") && !embeddedHtml.includes("data-sx-account") && embeddedHtml.includes("strify-brand"));
+  click({ "[data-strify-artist]": { dataset: { strifyArtist: H(7) } } });
+  assert.match(nav[0], /^\/strify\?artist=npub1/);
+  click({ "[data-strify-artist-back]": {} });
+  assert.equal(nav[1], "/strify");
 });

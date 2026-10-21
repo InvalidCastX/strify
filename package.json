@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "strify — a standalone Nostr music player: explore, play and publish music over Nostr relays.",
+  "description": "strify \u2014 a standalone Nostr music player: explore, play and publish music over Nostr relays.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -15,5 +15,15 @@
   },
   "devDependencies": {
     "vite": "^5.4.11"
-  }
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./embed": "./src/core/strify-embed.js",
+    "./strify.css": "./src/strify.css",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "*.css"
+  ]
 }

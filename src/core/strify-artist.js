@@ -14,7 +14,8 @@ export function parseArtistParam(search) {
   return parsed.pubkey || null;
 }
 
-export const artistPath = (pubkey) => `/?artist=${encodeURIComponent(npubFromHex(pubkey))}`;
+/** Link to an artist page under `base` ("/" standalone, "/strify" when embedded in friendstr). */
+export const artistPath = (pubkey, base = "/") => `${String(base || "/").replace(/\/+$/, "") || "/"}?artist=${encodeURIComponent(npubFromHex(pubkey))}`;
 
 /** Relay filter for one artist's kind 1808 events; `until` pages backwards in time. */
 export function artistFilter(pubkey, { until = null, limit = ARTIST_PAGE_SIZE } = {}) {

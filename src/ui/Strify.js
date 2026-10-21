@@ -2,7 +2,7 @@
 // All Nostr I/O goes through the host (main.js) for signing/publishing/zaps, and StrifyNet for reads.
 import { escapeHtml, shorten, timeAgo } from "../core/format.js";
 import { npubFromHex } from "../core/nostr-core.js";
-import { navigate } from "../core/router.js";
+import { navigate as defaultNavigate } from "../core/router.js";
 import { ensureNostrTools } from "../core/auth.js";
 import { StrifyNet } from "../core/strify-net.js";
 import * as player from "../core/strify-player.js";
@@ -21,11 +21,20 @@ import { checkCopyright } from "../core/strify-copyright.js";
 import { PlaylistStore, fetchPlaylistVersion, refKey, playlistCoordinate, checkCreate, checkAddTrack } from "../core/strify-playlists.js";
 import { formatDuration } from "../core/music.js";
 import { toUnified, parseAlbum, parseArtist, parsePlaylist, parseSocialNote, countZaps, homePool, buildSections, buildExtraSections, greetingFor } from "../core/strify-home.js";
-import { pauseProfileMusic, setProfileAutoplayBlocker, setProfilePlayHook } from "../core/profile-player.js";
+import * as defaultProfilePlayer from "../core/profile-player.js";
 
 const net = new StrifyNet();
 const HEX64 = /^[0-9a-f]{64}$/i;
 let host = null;
+let initialized = false;
+// Host options (see initStrify). Standalone defaults: strify owns "/" and has no other music player.
+let basePath = "/";
+let navigate = defaultNavigate;
+let embedded = false;
+let profilePlayer = defaultProfilePlayer;
+const pauseProfileMusic = () => profilePlayer.pauseProfileMusic?.();
+const setProfileAutoplayBlocker = (fn) => profilePlayer.setProfileAutoplayBlocker?.(fn);
+const setProfilePlayHook = (fn) => profilePlayer.setProfilePlayHook?.(fn);
 let pageActive = false;
 let pageToken = 0;
 
@@ -394,10 +403,10 @@ export function renderStrifyPage() {
     <header class="strify-hero">
       <div class="strify-topbar">
         <div class="strify-brand">${strifyMark("strify-mark")}<div><h1 class="strify-wordmark" aria-label="strify"><span class="strify-wm-a">str</span>ify</h1><p class="strify-tagline"><small>Nostr music</small></p></div></div>
-        <div class="strify-topactions" role="toolbar" aria-label="App">
+        ${embedded ? "" : `<div class="strify-topactions" role="toolbar" aria-label="App">
           <button type="button" class="sx-btn" data-sx-relays aria-label="Relay settings">${icon("fa-server")}<span class="sx-btn-label">Relays</span> <span class="sx-badge" data-sx-relay-count></span></button>
           <div data-sx-account></div>
-        </div>
+        </div>`}
       </div>
       <nav class="strify-tabs" role="tablist" aria-label="strify sections">
         ${NAV.map(([id, label, ic]) => `<button type="button" role="tab" class="strify-tab" data-strify-tab="${id}" aria-selected="${!parseArtistParam(window.location.search) && S.tab === id}">${icon(ic)}<span>${label}</span></button>`).join("")}
@@ -1567,8 +1576,8 @@ function onClick(event) {
   if ((el = q("[data-sh-all]"))) { S.homeAll = el.dataset.shAll; paintBody(); window.scrollTo?.({ top: 0 }); return; }
   if (q("[data-sh-back]")) { S.homeAll = null; paintBody(); return; }
   if ((el = q("[data-sh-play]"))) { void playCollection(el.dataset.shPlay); return; }
-  if ((el = q("[data-strify-artist]"))) { const pubkey = el.dataset.strifyArtist; if (/^[0-9a-f]{64}$/i.test(pubkey)) navigate(artistPath(pubkey.toLowerCase())); return; }
-  if (q("[data-strify-artist-back]")) { navigate("/"); return; }
+  if ((el = q("[data-strify-artist]"))) { const pubkey = el.dataset.strifyArtist; if (/^[0-9a-f]{64}$/i.test(pubkey)) navigate(artistPath(pubkey.toLowerCase(), basePath)); return; }
+  if (q("[data-strify-artist-back]")) { navigate(basePath); return; }
   if (q("[data-strify-artist-retry]") && S.artist) { void loadArtist(S.artist, { force: true }); return; }
   if (q("[data-strify-artist-more]") && S.artist) { void loadArtist(S.artist, { more: true }); return; }
   if (q("[data-strify-share-status]")) { setShare(!shareOn); return; }
@@ -1588,7 +1597,7 @@ function onClick(event) {
     return;
   }
   if (q("[data-strify-search-clear]")) { S.query = ""; S.searchFilter = "all"; paintBody(); document.querySelector("[data-strify-search]")?.focus(); return; }
-  if ((el = q("[data-strify-tab]")) && S.artist) { S.tab = el.dataset.strifyTab; S.view = null; navigate("/"); return; }
+  if ((el = q("[data-strify-tab]")) && S.artist) { S.tab = el.dataset.strifyTab; S.view = null; navigate(basePath); return; }
   if ((el = q("[data-strify-tab]"))) { S.tab = el.dataset.strifyTab; S.view = null; paintBody(); void startDiscovery(); return; }
   if ((el = q("[data-strify-retry]"))) { const tab = el.dataset.strifyRetry; void startDiscovery(["home", "search", "library", "create"].includes(tab) ? tab : S.tab, true); return; }
   if ((el = q("[data-strify-play-from]"))) { const name = el.dataset.strifyPlayFrom; playList(name, Number(el.dataset.index), labelFor(name)); return; }
@@ -1805,12 +1814,27 @@ async function openNowPlaying(pubkey) {
   });
 }
 
+/**
+ * Mount strify inside an app. `hostApi` supplies the account and Nostr plumbing:
+ *   getSession, getProfile?, getUserRelays, getFollows, isPremium, isPremiumLoading, sign, publish, uploadFallback, toast, signIn, openZap
+ * and, when strify lives inside a larger app (friendstr), optional layout hooks:
+ *   embedded      true → the host already owns login and relays, so strify hides its own Relays / Log in buttons
+ *   basePath      path strify is served from ("/" standalone, "/strify" in friendstr); used for artist links and "back"
+ *   navigate      (path) => void, the host router's client-side navigation (defaults to history.pushState + popstate)
+ *   profilePlayer { pauseProfileMusic, setProfileAutoplayBlocker, setProfilePlayHook } for a second player the host owns
+ */
 export function initStrify(hostApi) {
   host = hostApi;
+  embedded = !!hostApi.embedded;
+  basePath = hostApi.basePath || "/";
+  navigate = hostApi.navigate || defaultNavigate;
+  profilePlayer = hostApi.profilePlayer || defaultProfilePlayer;
   ensureMini();
   player.setPlayGuard(() => pauseProfileMusic());
   setProfileAutoplayBlocker(() => player.isStrifyPlaying());
   setProfilePlayHook(() => player.pauseStrify());
+  if (initialized) return; // calling initStrify again only updates the host options; listeners are registered once
+  initialized = true;
   player.subscribe(syncUi);
   player.subscribeTime(syncTime);
   document.addEventListener("click", onClick);

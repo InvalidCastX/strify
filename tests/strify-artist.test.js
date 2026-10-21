@@ -82,3 +82,10 @@ test("own tracks are pulled to the top and never repeated in the rest", async ()
   assert.deepEqual(rest.map((t) => t.eventId[0]), ["2", "3"]);
   assert.equal(withoutOwn(all, []).length, 3);
 });
+
+test("artistPath follows the base path strify is mounted on", () => {
+  assert.equal(artistPath(ARTIST).split("?")[0], "/");
+  assert.equal(artistPath(ARTIST, "/strify").split("?")[0], "/strify");
+  assert.equal(artistPath(ARTIST, "/strify/").split("?")[0], "/strify");
+  assert.equal(parseArtistParam(`?${artistPath(ARTIST, "/strify").split("?")[1]}`), ARTIST);
+});
