@@ -13,7 +13,7 @@ npm test
 
 The build is a static site. `vercel.json` (Vercel) and `public/_redirects` (Cloudflare Pages / Netlify) send every path to `index.html`.
 
-## Embedding in another app (friendstr)
+## Embedding in another app
 
 strify is also a library. A host app installs it from GitHub and supplies the account plumbing, so users never log in to strify separately:
 
