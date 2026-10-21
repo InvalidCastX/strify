@@ -4,7 +4,11 @@
 //         duration; content is a free-text description or JSON. The media URL is sometimes a wavlake.com *page*, not audio.
 //   1808  (as already used by friendstr profile music): JSON content {url,title,artist,coverArt,duration,genre}; a header may
 //         instead carry tags and reference its audio track by an `e` or `a` tag, so it is resolved, not assumed playable.
-import { AUDIO_HEADER_KIND, AUDIO_TRACK_KIND, DISCOVERY } from "./strify-config.js";
+import { AUDIO_HEADER_KIND, AUDIO_TRACK_KIND, TRACK_KIND, DISCOVERY } from "./strify-config.js";
+
+/** Addressable track kinds: identified by pubkey + d tag instead of event id. */
+export const ADDRESSABLE_TRACK_KINDS = Object.freeze([AUDIO_TRACK_KIND, TRACK_KIND]);
+export const isAddressableTrackKind = (kind) => ADDRESSABLE_TRACK_KINDS.includes(kind);
 
 const HEX64 = /^[0-9a-f]{64}$/i;
 const NON_AUDIO_HOSTS = /(^|\.)(youtube\.com|youtu\.be|spotify\.com|soundcloud\.com|bandcamp\.com|apple\.com|tidal\.com|deezer\.com|fountain\.fm)$/i;
@@ -29,12 +33,12 @@ export function classifyMediaUrl(value) {
   return { type: "audio", url: href };
 }
 
-const tagValue = (tags, ...names) => {
+export const tagValue = (tags, ...names) => {
   for (const tag of tags || []) if (names.includes(tag?.[0]) && typeof tag[1] === "string" && tag[1].trim()) return tag[1].trim();
   return "";
 };
 
-function imetaFields(tags) {
+export function imetaFields(tags) {
   const out = { url: "", image: "", mime: "" };
   for (const tag of tags || []) {
     if (tag?.[0] !== "imeta") continue;
@@ -46,16 +50,16 @@ function imetaFields(tags) {
   return out;
 }
 
-function jsonContent(content) {
+export function jsonContent(content) {
   const text = String(content || "").trim();
   if (!text.startsWith("{")) return {};
   try { const data = JSON.parse(text); return data && typeof data === "object" && !Array.isArray(data) ? data : {}; } catch { return {}; }
 }
 
-const clip = (value, max) => String(value || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, max);
+export const clip = (value, max) => String(value || "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, max);
 
 export function trackKeyOf({ kind, pubkey, d, eventId }) {
-  return kind === AUDIO_TRACK_KIND && d ? `${kind}:${pubkey}:${d}` : String(eventId || "");
+  return isAddressableTrackKind(kind) && d ? `${kind}:${pubkey}:${d}` : String(eventId || "");
 }
 
 /**
@@ -67,13 +71,13 @@ export function trackKeyOf({ kind, pubkey, d, eventId }) {
  */
 export function parseAudioEvent(event) {
   if (!event || typeof event !== "object" || !HEX64.test(event.id || "") || !HEX64.test(event.pubkey || "")) return null;
-  if (event.kind !== AUDIO_HEADER_KIND && event.kind !== AUDIO_TRACK_KIND) return null;
+  if (event.kind !== AUDIO_HEADER_KIND && !isAddressableTrackKind(event.kind)) return null;
   const tags = Array.isArray(event.tags) ? event.tags : [];
   const data = jsonContent(event.content);
-  const description = event.kind === AUDIO_TRACK_KIND && !String(event.content || "").trim().startsWith("{") ? clip(event.content, 500) : clip(data.description, 500);
+  const description = isAddressableTrackKind(event.kind) && !String(event.content || "").trim().startsWith("{") ? clip(event.content, 500) : clip(data.description, 500);
   const meta = imetaFields(tags);
 
-  const candidates = [data.url, data.mediaUrl, data.media, tagValue(tags, "media"), tagValue(tags, "url"), meta.url, ...tags.filter((t) => t?.[0] === "r").map((t) => t[1])];
+  const candidates = [data.url, data.mediaUrl, data.media, tagValue(tags, "media"), tagValue(tags, "url"), tagValue(tags, "audio"), meta.url, ...tags.filter((t) => t?.[0] === "r").map((t) => t[1])];
   let media = { type: "unsupported", url: "" };
   for (const candidate of candidates) {
     const result = classifyMediaUrl(candidate);
@@ -90,7 +94,7 @@ export function parseAudioEvent(event) {
     d,
     createdAt: Number(event.created_at) || 0,
     url: media.type === "audio" ? media.url : "",
-    title: clip(tagValue(tags, "title") || data.title, 120) || "Untitled track",
+    title: clip(tagValue(tags, "title", "name") || data.title || data.name, 120) || "Untitled track",
     artist: clip(tagValue(tags, "artist") || data.artist, 120),
     album: clip(tagValue(tags, "album") || data.album, 120),
     genre: clip(tagValue(tags, "genre") || data.genre, 40),
@@ -107,7 +111,7 @@ export function parseAudioEvent(event) {
     if (tag?.[0] === "e" && HEX64.test(tag[1] || "")) refs.push({ type: "e", id: tag[1].toLowerCase() });
     if (tag?.[0] === "a") {
       const [kind, pubkey, ...rest] = String(tag[1] || "").split(":");
-      if (Number(kind) === AUDIO_TRACK_KIND && HEX64.test(pubkey || "") && rest.length) refs.push({ type: "a", pubkey: pubkey.toLowerCase(), d: rest.join(":") });
+      if (isAddressableTrackKind(Number(kind)) && HEX64.test(pubkey || "") && rest.length) refs.push({ type: "a", pubkey: pubkey.toLowerCase(), d: rest.join(":") });
     }
   }
   return refs.length ? { status: "reference", track, refs } : null;
@@ -179,7 +183,7 @@ export async function resolveAudioEvents(events, { fetchEvents, resolveWavlake =
     const filters = [];
     if (ids.length) filters.push({ ids: ids.slice(0, 100) });
     for (const pubkey of new Set(coords.map((c) => c.pubkey))) {
-      filters.push({ kinds: [AUDIO_TRACK_KIND], authors: [pubkey], "#d": [...new Set(coords.filter((c) => c.pubkey === pubkey).map((c) => c.d))].slice(0, 50) });
+      filters.push({ kinds: [...ADDRESSABLE_TRACK_KINDS], authors: [pubkey], "#d": [...new Set(coords.filter((c) => c.pubkey === pubkey).map((c) => c.d))].slice(0, 50) });
     }
     let fetched = [];
     try { fetched = filters.length ? await fetchEvents(filters) : []; } catch { fetched = []; }

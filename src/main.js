@@ -54,7 +54,7 @@ async function loadMyProfile() {
   try {
     const events = await shellNet.fetch([{ kinds: [0], authors: [pk], limit: 1 }], { urls: readRelays().slice(0, 6), timeout: 4000 });
     const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-    if (newest && state.session?.pubkeyHex === pk) { state.profile = JSON.parse(newest.content || "{}"); paintAccount(); }
+    if (newest && state.session?.pubkeyHex === pk) { state.profile = JSON.parse(newest.content || "{}"); paintAccount(); window.dispatchEvent(new Event("strify:profile")); }
   } catch { /* the chip keeps showing the short npub */ }
 }
 
@@ -204,6 +204,7 @@ document.addEventListener("click", (e) => {
 // ── strify host: what the music module needs from the app ──────────
 initStrify({
   getSession: () => state.session,
+  getProfile: () => state.profile,
   getUserRelays: () => readRelays(),
   getFollows: () => [],
   isPremium: () => true, // no paid tier in the standalone app: everyone gets the larger playlist limits

@@ -6,7 +6,7 @@ import { navigate } from "../core/router.js";
 import { ensureNostrTools } from "../core/auth.js";
 import { StrifyNet } from "../core/strify-net.js";
 import * as player from "../core/strify-player.js";
-import { AUDIO_HEADER_KIND, AUDIO_TRACK_KIND, PLAYLIST_KIND, DELETION_KIND, DISCOVERY, FEED_KINDS, REPOST_KIND, COMMENT_KIND, UPLOAD, GENRES, LICENSES, LIBRARY, QUALITY, limitsFor } from "../core/strify-config.js";
+import { AUDIO_HEADER_KIND, AUDIO_TRACK_KIND, TRACK_KIND, CATALOG_KINDS, HOME_PLAYLIST_KINDS, SOCIAL, HOME, PLAYLIST_KIND, DELETION_KIND, DISCOVERY, FEED_KINDS, REPOST_KIND, COMMENT_KIND, UPLOAD, GENRES, LICENSES, LIBRARY, QUALITY, limitsFor } from "../core/strify-config.js";
 import { playlistCoordinateFromTags } from "../core/strify-embed.js";
 import { resolveFollows } from "../core/strify-follows.js";
 import { resolveAudioEvents, trackRef, safeHttpsUrl, classifyMediaUrl, parseAudioEvent, dedupeTracks } from "../core/strify-tracks.js";
@@ -20,6 +20,7 @@ import { validateAudioFile, validateCoverFile, validateDetails, buildTrackTempla
 import { checkCopyright } from "../core/strify-copyright.js";
 import { PlaylistStore, fetchPlaylistVersion, refKey, playlistCoordinate, checkCreate, checkAddTrack } from "../core/strify-playlists.js";
 import { formatDuration } from "../core/music.js";
+import { toUnified, parseAlbum, parseArtist, parsePlaylist, parseSocialNote, countZaps, homePool, buildSections, buildExtraSections, greetingFor } from "../core/strify-home.js";
 import { pauseProfileMusic, setProfileAutoplayBlocker, setProfilePlayHook } from "../core/profile-player.js";
 
 const net = new StrifyNet();
@@ -36,8 +37,11 @@ const S = {
   global: { status: "idle", tracks: [], skipped: 0, error: "", loadedAt: 0 },
   forYou: { status: "idle", tracks: [], error: "", follows: 0, followSet: new Set(), followState: "none", pubkey: "", loadedAt: 0 },
   query: "",
+  home: freshHome(), homeChip: "all", homeAll: null, homeMore: 0, homeSeed: (Math.random() * 2 ** 31) | 0, homeDrag: false, homeDirty: false,
   viewMode: readViewMode(), // "card" (default) | "list"; a UI preference cached in localStorage only
 };
+// Home data: kinds 30440 tracks, 30441 albums, 30442 artists, 30040/30443 playlists, kind 1 posts that carry audio, and zap counts.
+function freshHome() { return { status: "idle", pubkey: "", tracks: [], albums: [], artists: [], playlists: [], social: { status: "idle", tracks: [] }, zaps: new Map(), zapStatus: "idle", loadedAt: 0 }; }
 function readViewMode() { try { return localStorage.getItem("strify:view-mode") === "list" ? "list" : "card"; } catch { return "card"; } }
 function saveViewMode(mode) { try { localStorage.setItem("strify:view-mode", mode); } catch { /* preference is optional */ } }
 let store = null;
@@ -139,7 +143,8 @@ async function startDiscovery(tab = S.tab, force = false) {
   const account = myPubkey();
   const known = account ? host.getFollows?.(account) : [];
   const stale = S.forYou.status === "ready" && (S.forYou.pubkey !== account || (known?.length && followsDiffer(S.forYou.followSet, known)));
-  const jobs = [loadForYou(force || stale), loadGlobal(force)];
+  const forYouJob = loadForYou(force || stale);
+  const jobs = [forYouJob, tab === "home" ? loadHome(force, forYouJob) : loadGlobal(force)];
   if (tab === "home") jobs.push(loadLikes(force));
   await Promise.all(jobs);
 }
@@ -152,7 +157,7 @@ async function loadLikes(force = false) {
   if (!account || l.status === "loading" || (!force && l.status === "ready" && Date.now() - l.loadedAt < 300_000)) return;
   l.status = "loading";
   try {
-    const events = await net.fetch([{ kinds: [7], authors: [account], "#k": [String(AUDIO_HEADER_KIND), String(AUDIO_TRACK_KIND)], limit: LIBRARY.likesLimit }], { urls: userRelays(), timeout: DISCOVERY.fetchTimeout });
+    const events = await net.fetch([{ kinds: [7], authors: [account], "#k": [String(AUDIO_HEADER_KIND), String(AUDIO_TRACK_KIND), String(TRACK_KIND)], limit: LIBRARY.likesLimit }], { urls: userRelays(), timeout: DISCOVERY.fetchTimeout });
     const likedAt = new Map();
     for (const event of events) {
       if (event.pubkey !== account || event.kind !== 7 || event.content === "-") continue;
@@ -184,6 +189,79 @@ async function loadGlobal(force = false) {
     Object.assign(g, { status: "ready", tracks: result.tracks, skipped: result.skipped, scanned: result.scanned, loadedAt: Date.now() });
   } catch (error) { g.status = "error"; g.error = error?.message || "Couldn't load music."; }
   if (pageActive) { paintBody(); void loadArtistProfiles(g.tracks); }
+}
+
+const newestByKey = (items) => { const m = new Map(); for (const item of items) { const prior = m.get(item.key); if (!prior || item.createdAt > prior.createdAt) m.set(item.key, item); } return [...m.values()].sort((a, b) => b.createdAt - a.createdAt); };
+
+/** Home: catalog, playlists and social posts are queried in parallel; one failing query never blanks the others. */
+async function loadHome(force = false, followsJob = null) {
+  const h = S.home; const g = S.global; const me = myPubkey();
+  if (h.pubkey !== me) Object.assign(h, freshHome(), { pubkey: me });
+  if (h.status === "loading" || (!force && h.status === "ready" && Date.now() - h.loadedAt < 300_000)) return;
+  h.status = "loading"; h.social.status = "loading"; g.status = "loading"; g.error = ""; paintBody();
+  const urls = userRelays();
+  try { await net.connect(urls); } catch { /* net.fetch reports when nothing is reachable */ }
+  const fetchFrom = (filters, timeout = DISCOVERY.fetchTimeout) => net.fetch(filters, { urls, timeout });
+  const perKind = (kinds, limit) => kinds.map((kind) => ({ kinds: [kind], limit }));
+  const [cat, pls, soc] = await Promise.allSettled([
+    fetchFrom(perKind(CATALOG_KINDS, DISCOVERY.perKindLimit)),
+    fetchFrom(perKind(HOME_PLAYLIST_KINDS, 60)),
+    fetchFrom([{ kinds: [SOCIAL.kind], "#t": [...SOCIAL.tags], limit: SOCIAL.limit }]),
+  ]);
+  if (h.pubkey !== me) return;
+  if ([cat, pls, soc].every((r) => r.status === "rejected")) {
+    h.status = "error"; h.social.status = "ready"; g.status = "error"; g.error = cat.reason?.message || "Couldn't reach any relay.";
+    if (pageActive) paintBody();
+    return;
+  }
+  const events = cat.status === "fulfilled" ? cat.value : [];
+  const audio = events.filter((e) => e.kind === AUDIO_HEADER_KIND || e.kind === TRACK_KIND);
+  audio.forEach((e) => rawEvents.set(e.id, e));
+  let resolved = { tracks: [], skipped: 0 };
+  try { if (audio.length) resolved = await resolveAudioEvents(audio, { fetchEvents: fetchEventsFrom(urls) }); } catch { /* the remaining sections still render */ }
+  const tracks = resolved.tracks.map(toUnified); tracks.forEach(register);
+  g.tracks = tracks.filter((t) => t.kind !== TRACK_KIND); g.skipped = resolved.skipped; g.scanned = audio.length; g.status = "ready"; g.loadedAt = Date.now();
+  h.tracks = tracks.filter((t) => t.kind === TRACK_KIND);
+  h.albums = newestByKey(events.map(parseAlbum).filter(Boolean));
+  h.artists = newestByKey(events.map(parseArtist).filter(Boolean));
+  h.playlists = newestByKey((pls.status === "fulfilled" ? pls.value : []).map(parsePlaylist).filter(Boolean));
+  h.social.tracks = newestByKey((soc.status === "fulfilled" ? soc.value : []).map(parseSocialNote).filter(Boolean));
+  h.social.tracks.forEach(register);
+  h.status = "ready"; h.loadedAt = Date.now();
+  if (pageActive) { paintBody(); void loadArtistProfiles([...tracks, ...h.social.tracks, ...h.albums, ...h.playlists, ...h.artists]); }
+  void loadZaps();
+  // Posts from the accounts you follow need the follow list, which loads alongside; the other sections are already on screen.
+  try {
+    await followsJob?.catch(() => {});
+    const authors = [...S.forYou.followSet].filter((pk) => pk !== me).slice(0, 300);
+    if (me && authors.length && h.pubkey === me) {
+      const posts = await fetchFrom([{ kinds: [SOCIAL.kind], authors, limit: SOCIAL.followsLimit }], 5000);
+      h.social.tracks = newestByKey([...h.social.tracks, ...posts.map(parseSocialNote).filter(Boolean)]);
+      h.social.tracks.forEach(register);
+    }
+  } catch { /* hashtag posts remain as the fallback */ }
+  if (h.pubkey !== me) return;
+  h.social.status = "ready";
+  if (pageActive) { paintBody(); void loadArtistProfiles(h.social.tracks); }
+}
+
+/** Zap receipts (kind 9735) from the last day for the newest tracks. Without any, "Zapped Most Today" shows a clearly labelled preview. */
+async function loadZaps() {
+  const h = S.home;
+  if (h.zapStatus === "loading") return;
+  const candidates = homePool(dedupeTracks([...catalog(), ...h.tracks])).filter((t) => t.kind === AUDIO_HEADER_KIND || t.kind === TRACK_KIND).slice(0, HOME.zapCandidates);
+  if (!candidates.length) { h.zapStatus = "ready"; return; }
+  h.zapStatus = "loading";
+  try {
+    const since = Math.floor(Date.now() / 1000) - HOME.zapWindowSeconds;
+    const filters = [];
+    for (let i = 0; i < candidates.length; i += 100) filters.push({ kinds: [9735], "#e": candidates.slice(i, i + 100).map((t) => t.eventId), since, limit: 500 });
+    const coords = candidates.filter((t) => t.kind === TRACK_KIND && t.d).map((t) => `${t.kind}:${t.pubkey}:${t.d}`);
+    for (let i = 0; i < coords.length; i += 100) filters.push({ kinds: [9735], "#a": coords.slice(i, i + 100), since, limit: 500 });
+    h.zaps = countZaps(await net.fetch(filters, { urls: userRelays(), timeout: 5000 }), candidates);
+  } catch { /* no zap data: the preview is shown */ }
+  h.zapStatus = "ready";
+  if (pageActive && S.tab === "home" && !S.artist) paintBody();
 }
 
 async function loadForYou(force = false) {
@@ -438,28 +516,135 @@ function recentTracks() {
   return recent.map((track) => tracksByKey.get(track.key) || track);
 }
 
+// ── Home: greeting, filter chips, quick access, carousels ──────────
+const CHIPS = [["all", "All"], ["music", "Music"], ["foryou", "For You"], ["new", "New"], ["zaps", "Zaps"]];
+const homeIndex = new Map(); // collection key -> album / playlist, so a click can find its track references
+
+function homeSkeletonCard(type) {
+  return `<div class="sh-item${type === "artist" ? " sh-item-artist" : type === "track" ? "" : " sh-item-lg"}"><div class="strify-card is-skeleton${type === "artist" ? " sh-skel-artist" : ""}"><span class="strify-cover is-empty"></span><i></i><i></i></div></div>`;
+}
+function homeTrackCard(track, listName, index) {
+  const current = player.currentTrack();
+  return `<div class="sh-item"><article class="strify-card sh-card${current?.key === track.key ? " is-current" : ""}" data-strify-card="${E(track.key)}">
+    <button type="button" class="strify-card-art" data-strify-play-from="${E(listName)}" data-index="${index}" aria-label="Play ${E(track.title)} by ${E(artistOf(track))}">${coverHtml(track.coverArt, "")}<span class="strify-card-play">${icon("fa-play")}</span></button>
+    <div class="strify-card-meta"><strong title="${E(track.title)}">${E(track.title)}</strong><span title="${E(artistOf(track))}">${E(artistOf(track))}</span></div>
+  </article></div>`;
+}
+function homeCollectionCard(item) {
+  homeIndex.set(item.key, item);
+  const sub = item.type === "album" ? (item.artist || artistName(item.pubkey)) : `Playlist${item.refs.length ? ` · ${item.refs.length} track${item.refs.length === 1 ? "" : "s"}` : ""}`;
+  return `<div class="sh-item sh-item-lg"><article class="strify-card sh-card sh-card-lg">
+    <button type="button" class="strify-card-art" data-sh-play="${E(item.key)}" aria-label="Play ${E(item.title)}">${coverHtml(item.imageUrl, "")}<span class="strify-card-play">${icon("fa-play")}</span></button>
+    <div class="strify-card-meta"><strong title="${E(item.title)}">${E(item.title)}</strong><span title="${E(sub)}">${E(sub)}</span></div>
+  </article></div>`;
+}
+function homeArtistCard(artist) {
+  const name = artist.name || artistName(artist.pubkey);
+  return `<div class="sh-item sh-item-artist"><article class="sh-artist">
+    <button type="button" class="sh-artist-art" data-strify-artist="${E(artist.pubkey)}" aria-label="Open ${E(name)}">${coverHtml(artist.imageUrl, "")}</button>
+    <strong title="${E(name)}">${E(name)}</strong><span>Artist</span>
+  </article></div>`;
+}
+const homeCard = (section, item, index) => section.type === "track" ? homeTrackCard(item, section.id, index) : section.type === "artist" ? homeArtistCard(item) : homeCollectionCard(item);
+
+/** One carousel: bold title, "Show all", and a snap-scrolling row. While its data is loading it shows skeleton cards instead of nothing. */
+function carouselHtml(section, loading) {
+  if (loading) return `<section class="sh-car" data-tags="${section.tags.join(" ")}" aria-label="${E(section.title)}" aria-busy="true"><div class="sh-car-head"><h2>${E(section.title)}</h2></div><div class="sh-track" aria-hidden="true">${Array.from({ length: 7 }, () => homeSkeletonCard(section.type)).join("")}</div></section>`;
+  if (!section.items.length) return "";
+  const items = section.items.slice(0, HOME.showAllMax);
+  if (section.type === "track") { lists[section.id] = items; listLabels[section.id] = section.title; }
+  return `<section class="sh-car" data-tags="${section.tags.join(" ")}" aria-label="${E(section.title)}">
+    <div class="sh-car-head"><h2>${E(section.title)}</h2>${section.preview ? `<span class="sh-badge" title="Live zap counts appear here as zaps come in.">Preview</span>` : ""}<button type="button" class="strify-link sh-all" data-sh-all="${E(section.id)}">Show all</button></div>
+    <div class="sh-track" data-sh-track="${E(section.id)}" role="list">${items.slice(0, HOME.carouselSize).map((item, i) => homeCard(section, item, i)).join("")}</div>
+  </section>`;
+}
+
+function homeHeaderHtml() {
+  const profile = host.getProfile?.() || {};
+  const pic = myPubkey() ? safeHttpsUrl(profile.picture) : "";
+  const name = profile.display_name || profile.name || "";
+  return `<header class="sh-head"><h2 class="sh-greet">${E(greetingFor())}</h2>${pic ? `<span class="sh-avatar" title="${E(name)}"><img src="${E(pic)}" alt="${E(name ? `${name}'s avatar` : "Your avatar")}" referrerpolicy="no-referrer" decoding="async"></span>` : ""}</header>`;
+}
+const chipsHtml = () => `<div class="sh-chips" role="group" aria-label="Filter Home">${CHIPS.map(([id, label]) => `<button type="button" class="strify-chip" data-sh-chip="${id}" aria-pressed="${S.homeChip === id}">${label}</button>`).join("")}</div>`;
+
+function quickAccessHtml(pool, loading) {
+  const recent = recentTracks().filter((t) => t.url).slice(0, HOME.quickCount);
+  const have = new Set(recent.map((t) => t.key));
+  // History is device-local. When it holds fewer than 8 songs the remaining slots show the newest music so the grid is never half empty.
+  const fill = pool.filter((t) => !have.has(t.key)).slice(0, HOME.quickCount - recent.length);
+  const items = [...recent, ...fill];
+  if (!items.length) return loading ? `<div class="sh-quick" aria-hidden="true">${Array.from({ length: HOME.quickCount }, () => `<div class="sh-quick-card is-skeleton"><span class="strify-cover is-empty"></span><i></i></div>`).join("")}</div>` : "";
+  lists["home-quick"] = items; listLabels["home-quick"] = "Jump back in";
+  const current = player.currentTrack();
+  return `<section class="sh-quickwrap" aria-label="Quick access"><div class="sh-quick" role="list">${items.map((t, i) => `<button type="button" role="listitem" class="sh-quick-card${current?.key === t.key ? " is-current" : ""}" data-strify-card="${E(t.key)}" data-strify-play-from="home-quick" data-index="${i}" aria-label="Play ${E(t.title)} by ${E(artistOf(t))}">${coverHtml(t.coverArt, "")}<span class="sh-quick-text"><strong title="${E(t.title)}">${E(t.title)}</strong><span title="${E(artistOf(t))}">${E(artistOf(t))}</span></span><span class="sh-quick-play">${icon("fa-play")}</span></button>`).join("")}</div>${recent.length ? `<button type="button" class="strify-link sh-clear" data-strify-recent-clear>Clear history</button>` : ""}</section>`;
+}
+
+function homeModel() {
+  const h = S.home;
+  const pool = homePool(dedupeTracks([...catalog(), ...h.tracks]));
+  const loading = h.status === "idle" || h.status === "loading";
+  const sections = buildSections({ pool, albums: h.albums, playlists: h.playlists, social: h.social.tracks, followSet: S.forYou.followSet, zaps: h.zaps, seed: S.homeSeed });
+  const extras = buildExtraSections({ pool, artists: h.artists, profileOf: (pk) => profiles.get(pk), seed: S.homeSeed });
+  const sectionLoading = { follows: loading || h.social.status !== "ready", zapped: loading || h.zapStatus === "loading" };
+  return { pool, loading, sections, extras, isLoading: (s) => loading || !!sectionLoading[s.id] };
+}
+
+function homeAllHtml(model) {
+  const section = [...model.sections, ...model.extras].find((x) => x.id === S.homeAll);
+  if (!section) { S.homeAll = null; return ""; }
+  const items = section.items.slice(0, HOME.showAllMax);
+  const body = section.type === "track" ? grid(`all-${section.id}`, items, section.title) : `<div class="sh-grid">${items.map((item, i) => homeCard(section, item, i)).join("")}</div>`;
+  return `<div class="sh-home sh-allview"><div class="sh-all-head"><button type="button" class="strify-btn" data-sh-back>${icon("fa-arrow-left")} Home</button><h2>${E(section.title)}</h2></div>${body}</div>`;
+}
+
 function homeHtml() {
-  const account = myPubkey();
-  const all = catalog();
-  const real = filterRealMusic(all);
-  const likedReal = filterRealMusic(S.likes.tracks);
-  const played = filterRealMusic(recentTracks());
-  const size = LIBRARY.shelfSize;
-  const sections = [
-    account ? shelf("home-liked", "Liked songs", "fa-heart", likedReal.slice(0, size), likedReal.length > size ? `<button type="button" class="strify-link" data-strify-goto-lib="liked">View all</button>` : "") : "",
-    shelf("home-recent", "Recently played", "fa-clock-rotate-left", played.slice(0, size), `<button type="button" class="strify-link" data-strify-recent-clear>Clear</button>`),
-    shelf("home-new", "New releases", "fa-compact-disc", real.slice(0, size)),
-  ].join("");
-  const hidden = all.length - real.length;
-  const loading = loadingCatalog();
-  if (!sections) {
-    if (loading) return skeleton();
-    if (S.global.status === "error" && !all.length) return stateBlock("error", "Couldn't reach the music relays", S.global.error, retryButton("home"));
-    return stateBlock("empty", "No complete songs found yet", `Home only lists songs that have a title, artist, cover, genre and duration.${hidden ? ` ${hidden} track${hidden === 1 ? " was" : "s were"} hidden because their info is incomplete; Search can still find ${hidden === 1 ? "it" : "them"}.` : ""}`, `<button type="button" class="strify-btn is-primary" data-strify-goto="create">${icon("fa-cloud-arrow-up")} Upload a song</button> <button type="button" class="strify-btn" data-strify-goto="search">${icon("fa-magnifying-glass")} Search</button>`);
+  homeIndex.clear();
+  const model = homeModel();
+  if (S.homeAll) { const all = homeAllHtml(model); if (all) return all; }
+  const { loading, pool, sections, extras } = model;
+  const core = sections.map((section) => carouselHtml(section, model.isLoading(section))).join("");
+  const quick = quickAccessHtml(pool, loading);
+  const shownExtras = extras.slice(0, HOME.extraBatch + S.homeMore);
+  const more = extras.length > shownExtras.length;
+  if (!loading && !core && !quick && !shownExtras.length) {
+    const why = S.home.status === "error" ? "No relay responded. Check your connection or choose different relays." : "Your relays returned no playable music. Add more relays to search further.";
+    return `${homeHeaderHtml()}${stateBlock("empty", "No music found", why, `${retryButton("home")} <button type="button" class="strify-btn" data-sx-relays>${icon("fa-server")} Relays</button> <button type="button" class="strify-btn" data-strify-goto="create">${icon("fa-cloud-arrow-up")} Upload a song</button>`)}`;
   }
-  const intro = account ? "" : `<p class="strify-note">${icon("fa-circle-info")} Sign in to see your liked songs and to upload your own music.</p>`;
-  const note = hidden && !loading ? `<p class="strify-note">${hidden} track${hidden === 1 ? "" : "s"} hidden: Home only lists songs with a title, artist, cover, genre and duration. You can still find ${hidden === 1 ? "it" : "them"} in Search.</p>` : "";
-  return `${intro}${sections}${loading ? skeleton() : ""}${note}`;
+  return `<div class="sh-home" data-chip="${S.homeChip}">
+    ${homeHeaderHtml()}${chipsHtml()}${quick}
+    <div class="sh-cars">${core}${shownExtras.map((section) => carouselHtml(section, false)).join("")}</div>
+    <p class="sh-filter-empty" data-sh-filter-empty hidden>Nothing here yet. Try another filter.</p>
+    ${more ? `<div class="sh-sentinel" data-sh-sentinel aria-hidden="true"></div>` : ""}
+  </div>`;
+}
+
+function applyChip() {
+  const wrap = document.querySelector?.(".sh-home"); if (!wrap) return;
+  wrap.dataset.chip = S.homeChip;
+  wrap.querySelectorAll("[data-sh-chip]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.shChip === S.homeChip)));
+  const note = wrap.querySelector("[data-sh-filter-empty]");
+  if (note) note.hidden = S.homeChip === "all" || [...wrap.querySelectorAll(".sh-car")].some((el) => el.offsetParent !== null);
+}
+let sentinelObserver = null;
+function observeSentinel() {
+  const el = document.querySelector?.("[data-sh-sentinel]");
+  if (!el || typeof IntersectionObserver === "undefined") return;
+  sentinelObserver ||= new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting) && pageActive && S.tab === "home" && !S.artist && !S.homeAll) { S.homeMore += HOME.extraBatch; paintBody(); }
+  }, { rootMargin: "500px 0px" });
+  sentinelObserver.disconnect(); sentinelObserver.observe(el);
+}
+
+/** An album or playlist plays through its track references; an album without any falls back to loaded tracks with the same album name. */
+async function playCollection(key) {
+  const item = homeIndex.get(key); if (!item) return;
+  let refs = item.refs;
+  if (!refs.length && item.type === "album") {
+    const wanted = item.title.toLowerCase();
+    refs = dedupeTracks([...catalog(), ...S.home.tracks]).filter((t) => t.pubkey === item.pubkey && t.album && t.album.toLowerCase() === wanted).map((t) => ({ id: t.eventId, kind: t.kind, pubkey: t.pubkey, ...(t.d ? { d: t.d } : {}) }));
+  }
+  if (!refs.length) { host.toast("This collection doesn't list any tracks that can be played yet."); return; }
+  await playPlaylistRefs(refs, item.title, 0);
 }
 
 const RECO_ICONS = { "more-artist": "fa-user", "because-genre": "fa-wand-magic-sparkles", follows: "fa-user-group", fresh: "fa-seedling" };
@@ -584,12 +769,17 @@ function paintBody() {
   const body = document.getElementById("strifyBody");
   if (!body || !pageActive) return;
   document.querySelectorAll("[data-strify-tab]").forEach((b) => b.setAttribute("aria-selected", String(!S.artist && b.dataset.strifyTab === S.tab)));
+  if (S.tab !== "home") S.homeAll = null;
   paintToolbar(); paintShareToggle();
   if (S.artist) { body.innerHTML = artistHtml(); syncUi(); return; }
   // Never rebuild the upload form while someone is filling it in (relay data arriving would wipe their files).
   if (S.tab === "create" && !S.create.dirtyRender && body.querySelector("[data-strify-create-form]")) { syncUi(); return; }
   S.create.dirtyRender = false;
+  if (S.tab === "home" && S.homeDrag) { S.homeDirty = true; return; } // don't rebuild the row under a drag
+  const kept = S.tab === "home" ? [...body.querySelectorAll("[data-sh-track]")].map((el) => [el.dataset.shTrack, el.scrollLeft]) : [];
   body.innerHTML = S.tab === "home" ? homeHtml() : S.tab === "search" ? searchHtml() : S.tab === "library" ? libraryHtml() : createHtml();
+  for (const [id, left] of kept) { const row = body.querySelector(`[data-sh-track="${id}"]`); if (row) row.scrollLeft = left; }
+  if (S.tab === "home") { applyChip(); observeSentinel(); }
   syncUi();
 }
 
@@ -663,7 +853,7 @@ async function resolveRefs(refs) {
   if (!todo.length) return refs.map((r) => refCache.get(refKey(r)) || null);
   const filters = [];
   const ids = todo.filter((r) => !r.d).map((r) => r.id); if (ids.length) filters.push({ ids });
-  for (const pk of new Set(todo.filter((r) => r.d).map((r) => r.pubkey))) filters.push({ kinds: [AUDIO_TRACK_KIND], authors: [pk], "#d": todo.filter((r) => r.pubkey === pk && r.d).map((r) => r.d) });
+  for (const pk of new Set(todo.filter((r) => r.d).map((r) => r.pubkey))) filters.push({ kinds: [AUDIO_TRACK_KIND, TRACK_KIND], authors: [pk], "#d": todo.filter((r) => r.pubkey === pk && r.d).map((r) => r.d) });
   const urls = musicAndUserRelays();
   try {
     const { tracks } = await discover(filters, urls);
@@ -1049,7 +1239,7 @@ function openSongPicker(d) {
 }
 
 // ── Track social actions ───────────────────────────────────────────
-const coordOf = (t) => (t.kind === AUDIO_TRACK_KIND && t.d ? `${AUDIO_TRACK_KIND}:${t.pubkey}:${t.d}` : "");
+const coordOf = (t) => ((t.kind === AUDIO_TRACK_KIND || t.kind === TRACK_KIND) && t.d ? `${t.kind}:${t.pubkey}:${t.d}` : "");
 function targetTags(t, upper = false) {
   const coord = coordOf(t);
   const rel = userRelays()[0] || "";
@@ -1294,6 +1484,10 @@ function onClick(event) {
     try { navigate(new URL(el.href, window.location.origin).pathname + new URL(el.href, window.location.origin).search); } catch { /* cross-origin links are left to the browser */ }
     return; // navigate() is a no-op when already on that URL
   }
+  if ((el = q("[data-sh-chip]"))) { S.homeChip = el.dataset.shChip; applyChip(); return; }
+  if ((el = q("[data-sh-all]"))) { S.homeAll = el.dataset.shAll; paintBody(); window.scrollTo?.({ top: 0 }); return; }
+  if (q("[data-sh-back]")) { S.homeAll = null; paintBody(); return; }
+  if ((el = q("[data-sh-play]"))) { void playCollection(el.dataset.shPlay); return; }
   if ((el = q("[data-strify-artist]"))) { const pubkey = el.dataset.strifyArtist; if (/^[0-9a-f]{64}$/i.test(pubkey)) navigate(artistPath(pubkey.toLowerCase())); return; }
   if (q("[data-strify-artist-back]")) { navigate("/"); return; }
   if (q("[data-strify-artist-retry]") && S.artist) { void loadArtist(S.artist, { force: true }); return; }
@@ -1548,6 +1742,28 @@ export function initStrify(hostApi) {
     void openNowPlaying(a.dataset.authorPubkey);
   }, true);
   player.subscribe(syncShare);
+  // Carousels: touch and trackpads scroll natively; a mouse can also drag. A drag never counts as a click on the card under it.
+  let drag = null; let suppressClick = false;
+  document.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "mouse" || e.button !== 0) return;
+    const row = e.target.closest?.("[data-sh-track]");
+    if (row) drag = { row, x: e.clientX, left: row.scrollLeft, moved: false };
+  });
+  document.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x;
+    if (!drag.moved && Math.abs(dx) > 5) { drag.moved = true; drag.row.classList.add("is-dragging"); S.homeDrag = true; }
+    if (drag.moved) drag.row.scrollLeft = drag.left - dx;
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    const moved = drag.moved; drag.row.classList.remove("is-dragging"); drag = null; S.homeDrag = false;
+    if (moved) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 0); }
+    if (S.homeDirty) { S.homeDirty = false; if (pageActive) paintBody(); }
+  };
+  document.addEventListener("pointerup", endDrag); document.addEventListener("pointercancel", endDrag);
+  document.addEventListener("click", (e) => { if (suppressClick) { e.preventDefault(); e.stopPropagation(); } }, true);
+  window.addEventListener("strify:profile", () => { if (pageActive && S.tab === "home" && !S.artist && !S.homeAll) paintBody(); });
   setInterval(() => { if (document.visibilityState === "visible") { queueStatusChecks(document, { stale: 60_000 }); paintRings(); } }, 45_000);
   let searchTimer = null;
   document.addEventListener("input", (e) => {

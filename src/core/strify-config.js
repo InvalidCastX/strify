@@ -2,6 +2,14 @@
 export const AUDIO_HEADER_KIND = 1808;
 export const AUDIO_TRACK_KIND = 31337;
 export const PLAYLIST_KIND = 30078;
+// Home: additional music kinds (see strify-home.js). 1808 stays as the legacy format.
+export const TRACK_KIND = 30440;   // addressable track (d tag)
+export const ALBUM_KIND = 30441;
+export const ARTIST_KIND = 30442;
+export const CATALOG_KINDS = Object.freeze([AUDIO_HEADER_KIND, TRACK_KIND, ALBUM_KIND, ARTIST_KIND]);
+export const HOME_PLAYLIST_KINDS = Object.freeze([30040, 30443]);
+export const SOCIAL = Object.freeze({ kind: 1, tags: Object.freeze(["music", "wavlake", "nowplaying", "strify"]), limit: 100, followsLimit: 150 });
+export const HOME = Object.freeze({ quickCount: 8, carouselSize: 20, showAllMax: 100, newWindowSeconds: 7 * 86400, zapWindowSeconds: 86400, zapCandidates: 150, extraBatch: 2 });
 export const DELETION_KIND = 5;
 export const COMMENT_KIND = 1111;
 export const REPOST_KIND = 16; // NIP-18 generic repost, used for non-kind-1 targets

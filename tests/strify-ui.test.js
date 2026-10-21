@@ -48,6 +48,7 @@ const events = [
   mk(121, ME, full(121, { title: "My Draft", coverArt: "", genre: "" })),
 ];
 const likes = [{ id: H(900), pubkey: ME, kind: 7, created_at: 1_700_009_999, content: "+", tags: [["e", H(102), "", OTHER], ["k", "1808"]], sig: "s" }];
+StrifyNet.prototype.connect = async (urls) => urls; // never open real sockets in tests
 StrifyNet.prototype.fetch = async (filters) => {
   const f = filters[0];
   if (f.kinds?.includes(7)) return likes;
@@ -88,14 +89,30 @@ test("nav has Home, Search, My Library and Create, each with its own Font Awesom
   }
 });
 
-test("Home: liked songs, recently played and new releases; recorded sounds and incomplete tracks stay off", async () => {
+test("Home: greeting, filter chips, quick access, then carousels in order; recorded sounds and incomplete tracks stay off", async () => {
   const home = await openTab("home");
-  assert.match(home, /Liked songs/);
-  assert.ok(home.indexOf("Liked songs") < home.indexOf("New releases"));
+  const at = (needle) => home.indexOf(needle);
+  assert.match(home, /Good (morning|afternoon|evening|night)/);
+  assert.ok(at("sh-greet") < at("sh-chips") && at("sh-chips") < at("sh-quick") && at("sh-quick") < at("sh-cars"), "header, chips, quick access, carousels");
+  assert.deepEqual([...home.matchAll(/data-sh-chip="(\w+)"/g)].map((m) => m[1]), ["all", "music", "foryou", "new", "zaps"]);
+  assert.ok(at("Made For You") > at("sh-cars") && at("Made For You") < at("Zapped Most Today"), "carousel order");
   assert.ok(home.includes("Song 101") && home.includes("Song 102") && home.includes("My Upload"));
   assert.ok(!home.includes("voice memo 1"), "recorded sound is hidden");
   assert.ok(!home.includes("My Draft"), "incomplete upload is hidden");
-  assert.match(home, /2 tracks hidden/);
+  assert.ok(home.includes("data-sh-all=\"made-for-you\"") && home.includes("Show all"));
+  assert.ok(home.includes("Preview"), "zap carousel is labelled as a preview when there are no zaps");
+});
+
+test("Home: chips filter client-side, Show all expands a carousel and Back returns", async () => {
+  click({ "[data-sh-chip]": { dataset: { shChip: "zaps" } } });
+  assert.match(await openTab("home"), /data-chip="zaps"/);
+  click({ "[data-sh-chip]": { dataset: { shChip: "all" } } });
+  assert.match(await openTab("home"), /data-chip="all"/);
+  click({ "[data-sh-all]": { dataset: { shAll: "made-for-you" } } });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(body.innerHTML.includes("sh-allview") && body.innerHTML.includes("Made For You"));
+  click({ "[data-sh-back]": {} });
+  assert.ok(!body.innerHTML.includes("sh-allview"));
 });
 
 test("Search: recommendations with genre chips (no junk); a query still finds incomplete tracks, complete ones first", async () => {

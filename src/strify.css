@@ -341,3 +341,76 @@ body.strify-has-player .fs-toast-host { bottom: calc(var(--strify-mini-h) + max(
 }
 
 
+
+/* ═══ Home: greeting, chips, quick access, carousels (scoped to .sh-*, uses the existing --sf-* theme variables) ═══ */
+.sh-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+.sh-greet { margin: 0; font-size: clamp(22px, 4vw, 30px); font-weight: 700; letter-spacing: -.01em; color: var(--sf-text); }
+.sh-avatar { flex: none; width: 40px; height: 40px; border-radius: 50%; overflow: hidden; background: var(--sf-raised); border: 1px solid var(--sf-border); }
+.sh-avatar img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+.sh-chips { display: flex; gap: 8px; margin: 0 0 16px; padding: 2px 2px 6px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.sh-chips::-webkit-scrollbar { display: none; }
+.sh-chips .strify-chip { flex: none; white-space: nowrap; }
+.sh-chips .strify-chip[aria-pressed="true"] { background: var(--sf-accent); border-color: var(--sf-accent); color: #fff; }
+
+.sh-quickwrap { margin: 0 0 22px; }
+.sh-quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.sh-quick-card { position: relative; display: flex; align-items: center; gap: 12px; min-width: 0; height: 56px; padding: 0 12px 0 0; border: 1px solid transparent; border-radius: 8px; background: var(--sf-surface); color: var(--sf-text); text-align: left; cursor: pointer; overflow: hidden; transition: background .18s, border-color .18s; }
+.sh-quick-card:hover, .sh-quick-card:focus-visible { background: var(--sf-raised); border-color: rgba(139,92,246,.5); }
+.sh-quick-card.is-current { border-color: var(--sf-accent); }
+.sh-quick-card .strify-cover { flex: none; width: 56px; height: 56px; aspect-ratio: auto; border-radius: 8px 0 0 8px; }
+.sh-quick-text { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
+.sh-quick-text strong, .sh-quick-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-quick-text strong { font-size: 13.5px; } .sh-quick-text span { color: var(--sf-muted); font-size: 12px; }
+.sh-quick-play { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--sf-accent); color: #fff; font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+@media (hover: hover) and (pointer: fine) { .sh-quick-play { opacity: 0; transform: translateX(4px); transition: opacity .16s, transform .16s; } .sh-quick-card:hover .sh-quick-play, .sh-quick-card:focus-visible .sh-quick-play { opacity: 1; transform: none; } }
+.sh-quick-card.is-skeleton { pointer-events: none; padding: 0; } .sh-quick-card.is-skeleton .strify-cover { animation: strify-pulse 1.4s ease-in-out infinite; }
+.sh-quick-card.is-skeleton i { flex: 1; height: 10px; margin-right: 24px; border-radius: 4px; background: var(--sf-raised); animation: strify-pulse 1.4s ease-in-out infinite; }
+.sh-clear { display: block; margin: 8px 0 0 auto; font-size: 12px; }
+
+.sh-car { margin: 0 0 26px; }
+.sh-car-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 10px; }
+.sh-car-head h2 { margin: 0; font-size: 20px; font-weight: 700; color: var(--sf-text); }
+.sh-car-head .sh-all { margin-left: auto; font-size: 13px; text-decoration: none; color: var(--sf-muted); }
+.sh-car-head .sh-all:hover { color: var(--sf-text); text-decoration: underline; }
+.sh-badge { padding: 1px 8px; border: 1px solid var(--sf-border); border-radius: 999px; color: var(--sf-muted); font-size: 11px; }
+
+.sh-track { --sh-gap: 12px; display: flex; gap: var(--sh-gap); overflow-x: auto; padding: 4px 2px 12px; scroll-snap-type: x proximity; scrollbar-width: thin; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; cursor: grab; }
+.sh-track.is-dragging { scroll-snap-type: none; cursor: grabbing; user-select: none; }
+.sh-track img { -webkit-user-drag: none; user-select: none; }
+.sh-item { flex: 0 0 172px; width: 172px; scroll-snap-align: start; } /* 172px card = 150px square cover inside the card padding */
+.sh-item-lg { flex-basis: 200px; width: 200px; }           /* album / playlist: 180px cover */
+.sh-item-artist { flex-basis: 150px; width: 150px; }       /* artist: 130px circle */
+.sh-item > .strify-card { height: 100%; }
+.sh-car .strify-card { transition: transform .18s ease, box-shadow .18s ease, background .18s, border-color .18s; }
+.sh-car .strify-card:hover, .sh-car .strify-card:focus-within { transform: scale(1.02); box-shadow: 0 10px 26px rgba(0,0,0,.45); }
+.sh-car .strify-card.is-skeleton:hover { transform: none; box-shadow: none; }
+
+.sh-artist { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 10px 8px; border-radius: 12px; text-align: center; transition: background .18s; }
+.sh-artist:hover, .sh-artist:focus-within { background: var(--sf-surface); }
+.sh-artist-art { display: block; width: 130px; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+.sh-artist-art .strify-cover { border-radius: 50%; }
+.sh-artist strong, .sh-artist span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-artist strong { font-size: 13.5px; } .sh-artist span { color: var(--sf-muted); font-size: 12px; }
+.sh-skel-artist .strify-cover { border-radius: 50%; }
+
+.sh-sentinel { height: 1px; }
+.sh-filter-empty { margin: 24px 0; text-align: center; color: var(--sf-muted); }
+.sh-all-head { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; } .sh-all-head h2 { margin: 0; font-size: 20px; }
+.sh-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 14px; }
+.sh-grid .sh-item { width: auto; }
+
+/* Filter chips hide carousels client-side; nothing is refetched and playback is untouched. */
+.sh-home[data-chip="music"] .sh-car:not([data-tags~="music"]),
+.sh-home[data-chip="foryou"] .sh-car:not([data-tags~="foryou"]),
+.sh-home[data-chip="new"] .sh-car:not([data-tags~="new"]),
+.sh-home[data-chip="zaps"] .sh-car:not([data-tags~="zaps"]) { display: none; }
+
+@media (max-width: 720px) {
+  .sh-quick { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .sh-quick-card { gap: 8px; } .sh-quick-text strong { font-size: 12.5px; }
+  .sh-item, .sh-item-lg, .sh-item-artist { flex-basis: calc((100% - 2 * var(--sh-gap)) / 2.5); width: calc((100% - 2 * var(--sh-gap)) / 2.5); } /* 2.5 cards visible */
+  .sh-artist-art { width: min(130px, 100%); }
+  .sh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { .sh-car .strify-card, .sh-car .strify-card:hover { transition: none; transform: none; } .sh-track { scroll-behavior: auto; } }
